@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+import queue
 import json
 import sqlite3
 from datetime import datetime
@@ -26,9 +27,11 @@ from input_monitor import InputMonitor
 from memory_system import SmartMemorySystem
 from task_executor import TaskExecutor
 
-class ScreenMateApp:
+class ScreenMateApp(ctk.CTk):
     def __init__(self):
         """Initialize the Key Points Extractor MVP"""
+        super().__init__()
+        
         # Initialize core components
         self.screen_capture = ScreenCapture()
         self.claude = ClaudeIntegration()
@@ -39,10 +42,12 @@ class ScreenMateApp:
         self.last_analysis_time = 0
         self.analysis_interval = 15.0  # Longer interval for cost efficiency
         
-        # Create the main window
-        self.app = ctk.CTk()
-        self.app.title("ScreenMate - Key Points Extractor")
-        self.app.geometry("600x500")
+        # Create message queue for thread communication
+        self.message_queue = queue.Queue()
+        
+        # Set up the window
+        self.title("ScreenMate - Key Points Extractor")
+        self.geometry("600x500")
         
         # Set up UI
         self._setup_ui()
@@ -50,9 +55,25 @@ class ScreenMateApp:
         # Set up system tray
         self._setup_system_tray()
         
-        # Start the main loop
-        self.app.mainloop()
-    
+        # Start message processing
+        self.after(100, self._process_messages)
+
+    def _process_messages(self):
+        """Process messages from the analysis thread"""
+        try:
+            while True:
+                message = self.message_queue.get_nowait()
+                if message["type"] == "status":
+                    self.status_label.configure(text=message["text"])
+                    if "color" in message:
+                        self.status_indicator.configure(text_color=message["color"])
+                elif message["type"] == "key_points":
+                    self._update_key_points(message["text"])
+        except queue.Empty:
+            pass
+        finally:
+            self.after(100, self._process_messages)
+
     def _setup_ui(self):
         """Set up a simplified UI focused on key points extraction"""
         # Configure the theme
@@ -60,7 +81,7 @@ class ScreenMateApp:
         ctk.set_default_color_theme("blue")
         
         # Main frame
-        main_frame = ctk.CTkFrame(self.app)
+        main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
         # Title
@@ -170,14 +191,14 @@ class ScreenMateApp:
     
     def _show_window(self):
         """Show the main window"""
-        self.app.deiconify()
-        self.app.lift()
+        self.deiconify()
+        self.lift()
     
     def _quit_app(self):
         """Quit the application"""
         if self.tray_icon:
             self.tray_icon.stop()
-        self.app.quit()
+        self.quit()
     
     def _toggle_monitoring(self):
         """Toggle continuous monitoring"""
@@ -217,55 +238,60 @@ class ScreenMateApp:
     def _perform_analysis(self):
         """Extract key points from the current screen content"""
         try:
-            # Update UI to show analysis is happening
-            self.app.after(0, lambda: self.status_label.configure(text="Analyzing..."))
+            # Update status
+            self.message_queue.put({"type": "status", "text": "Analyzing..."})
             
             # Capture screen and extract text
             screen_data = self.screen_capture.analyze_screen()
             
             if not screen_data or not screen_data["text"] or len(screen_data["text"]) < 50:
-                self.app.after(0, lambda: self.status_label.configure(
-                    text="Not enough text to analyze" if not self.analyzing else "Active"
-                ))
+                self.message_queue.put({
+                    "type": "status",
+                    "text": "Not enough text to analyze" if not self.analyzing else "Active"
+                })
                 return
             
             # Check if content has changed significantly
             if hasattr(self, 'last_screen_text'):
-                # Simple similarity check
                 from difflib import SequenceMatcher
                 similarity = SequenceMatcher(None, self.last_screen_text, screen_data["text"]).ratio()
                 
-                # Skip if content is very similar to last analysis (>90% similar)
                 if similarity > 0.9:
-                    self.app.after(0, lambda: self.status_label.configure(
-                        text="Content unchanged" if not self.analyzing else "Active"
-                    ))
+                    self.message_queue.put({
+                        "type": "status",
+                        "text": "Content unchanged" if not self.analyzing else "Active"
+                    })
                     return
             
             # Save current text for future comparison
             self.last_screen_text = screen_data["text"]
             
-            # Check economy mode
+            # Get key points
             use_api = not self.economy_mode_var.get()
-            
-            # Get key points from Claude
             key_points = self.claude.get_key_points(screen_data["text"], use_api=use_api)
             
-            # Update key points text
-            self.app.after(0, lambda: self._update_key_points(key_points))
+            # Update UI with results
+            self.message_queue.put({
+                "type": "key_points",
+                "text": key_points
+            })
             
-            # Update status
-            self.app.after(0, lambda: self.status_label.configure(
-                text="Active" if self.analyzing else "Analyzed"
-            ))
+            self.message_queue.put({
+                "type": "status",
+                "text": "Active" if self.analyzing else "Analysis complete",
+                "color": "green" if self.analyzing else "blue"
+            })
             
         except Exception as e:
-            error_msg = f"Error during analysis: {str(e)}"
-            self.app.after(0, lambda: self._update_key_points(error_msg))
-            self.app.after(0, lambda: self.status_label.configure(text="Error"))
+            logging.error(f"Analysis error: {str(e)}")
+            self.message_queue.put({
+                "type": "status",
+                "text": f"Error: {str(e)}",
+                "color": "red"
+            })
     
     def _update_key_points(self, text):
-        """Update the key points text widget"""
+        """Update the key points text box"""
         self.key_points_text.configure(state="normal")
         self.key_points_text.delete("1.0", "end")
         self.key_points_text.insert("1.0", text)
