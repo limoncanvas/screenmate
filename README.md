@@ -1,81 +1,51 @@
-# ScreenMate MVP
+# ScreenMate
 
-ScreenMate is an AI assistant that analyzes your screen and provides relevant insights using Claude AI.
-
-## Prerequisites
-
-- Python 3.9 or higher
-- Tesseract OCR installed on your system
-  - Windows: Download and install from [https://github.com/UB-Mannheim/tesseract/wiki](https://github.com/UB-Mannheim/tesseract/wiki)
-  - Mac: `brew install tesseract`
-  - Linux: `sudo apt install tesseract-ocr`
-- Anthropic API key
-
-## Installation
-
-1. Clone this repository or download the files
-2. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   # Activate on Windows:
-   venv\Scripts\activate
-   # Activate on Mac/Linux:
-   source venv/bin/activate
-   ```
-3. Install the required packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Create a `.env` file in the project root and add your Anthropic API key:
-   ```
-   ANTHROPIC_API_KEY=your_api_key_here
-   ```
-
-## Usage
-
-1. Run the application:
-   ```bash
-   python main.py
-   ```
-
-2. The application window will open with the following features:
-   - Screen preview showing what's being captured
-   - Status indicator showing if analysis is active
-   - AI insights display
-   - Question input field
-   - Control buttons for starting/stopping analysis and performing one-time analysis
-
-3. To use ScreenMate:
-   - Click "Analyze Now" for a one-time screen analysis
-   - Click "Start Analysis" to begin continuous analysis (every 10 seconds)
-   - Type questions in the input field to ask about what's on your screen
-   - Click "Ask" to get AI-powered answers about your screen content
+ScreenMate is an intelligent desktop assistant that helps you manage your screen time and tasks more efficiently. It uses AI to analyze your screen content, track your activities, and provide insights to improve your productivity.
 
 ## Features
 
-- Real-time screen capture and analysis
-- OCR text extraction from screen content
-- AI-powered insights using Claude
-- Question-answering about screen content
-- Continuous or one-time analysis modes
-- Modern, responsive UI using CustomTkinter
+- **Screen Analysis**: Captures and analyzes screen content to provide contextual insights
+- **Task Execution**: Execute tasks through natural language commands
+- **Memory System**: Smart memory system that stores and retrieves relevant information
+- **Topic Management**: Organize and search through topics and related memories
+- **Daily Summaries**: Generate summaries of your daily activities and insights
 
-## Troubleshooting
+## Requirements
 
-1. If OCR doesn't work:
-   - Ensure Tesseract is installed correctly
-   - For Windows users, verify the Tesseract path in `screen_capture.py`
+- Python 3.8+
+- macOS (for full functionality)
+- Required Python packages (see requirements.txt)
 
-2. If Claude API calls fail:
-   - Check your API key in the `.env` file
-   - Verify your internet connection
+## Installation
 
-3. If the UI looks wrong:
-   - Try changing the appearance mode in `app.py`:
-     ```python
-     ctk.set_appearance_mode("Light")  # or "Dark"
-     ```
+1. Clone the repository:
+```bash
+git clone https://github.com/limoncanvas/screenguard.git
+cd screenguard
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Set up environment variables:
+Create a `.env` file with your API keys:
+```
+ANTHROPIC_API_KEY=your_api_key_here
+```
+
+## Usage
+
+Run the application:
+```bash
+python main.py
+```
 
 ## Contributing
 
-Feel free to submit issues and enhancement requests! 
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details. 
