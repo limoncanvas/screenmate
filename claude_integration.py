@@ -9,7 +9,7 @@ load_dotenv()
 
 class ClaudeIntegration:
     def __init__(self, daily_budget: int = 20):
-        """Initialize Claude integration"""
+        """Initialize Claude integration with API budget tracking"""
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
@@ -17,10 +17,14 @@ class ClaudeIntegration:
         self.client = Anthropic(api_key=self.api_key)
         self.context = []  # Store recent interactions for context
         
-        # API usage tracking
+        # API budget tracking
         self.daily_budget = daily_budget
         self.api_calls_today = 0
         self.last_budget_reset = time.time()
+        
+        # Configure logging
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(__name__)
         
         # Cost tracking
         self.daily_cost = 0.0
@@ -29,19 +33,16 @@ class ClaudeIntegration:
         self.max_daily_cost = 1.0  # $1.00 maximum daily cost
     
     def _check_api_budget(self) -> bool:
-        """Check if we're within API budget, reset counter if it's a new day"""
-        # Check if it's a new day and reset counter
-        now = time.time()
-        current_day = time.strftime("%Y-%m-%d", time.localtime(now))
-        last_day = time.strftime("%Y-%m-%d", time.localtime(self.last_budget_reset))
+        """Check if API budget is exceeded and reset if needed"""
+        current_time = time.time()
         
-        if current_day != last_day:
+        # Reset counter if it's a new day
+        if current_time - self.last_budget_reset > 86400:  # 24 hours
             self.api_calls_today = 0
             self.daily_cost = 0.0
-            self.last_budget_reset = now
+            self.last_budget_reset = current_time
         
-        # Check if we're under budget
-        return self.daily_cost < self.max_daily_cost
+        return self.api_calls_today < self.daily_budget
     
     def _increment_api_counter(self, tokens_used: int = 1000):
         """Increment the API call counter and cost tracking"""
@@ -51,11 +52,11 @@ class ClaudeIntegration:
         self.total_cost += call_cost
         
         # Log cost information
-        logging.info(f"API call cost: ${call_cost:.6f}, Daily total: ${self.daily_cost:.6f}, Total: ${self.total_cost:.6f}")
+        self.logger.info(f"API call cost: ${call_cost:.6f}, Daily total: ${self.daily_cost:.6f}, Total: ${self.total_cost:.6f}")
         
         # Check if we've exceeded the daily cost limit
         if self.daily_cost >= self.max_daily_cost:
-            logging.warning(f"Daily cost limit of ${self.max_daily_cost} reached. Switching to local processing.")
+            self.logger.warning(f"Daily cost limit of ${self.max_daily_cost} reached. Switching to local processing.")
             return False
         return True
     
@@ -109,7 +110,7 @@ class ClaudeIntegration:
             
         # Check if we should use the API
         if not use_api or not self._check_api_budget():
-            logging.info("API budget exceeded or economy mode enabled, using local processing")
+            self.logger.info("API budget exceeded or economy mode enabled, using local processing")
             return self._generate_local_insight(screen_text, input_context)
             
         try:
@@ -143,7 +144,7 @@ class ClaudeIntegration:
             return response.content[0].text
             
         except Exception as e:
-            logging.error(f"Error getting insights: {e}")
+            self.logger.error(f"Error getting insights: {e}")
             return self._generate_local_insight(screen_text, input_context)
             
     def _generate_local_insight(self, screen_text: str, input_context: Dict[str, Any]) -> str:
@@ -259,7 +260,7 @@ class ClaudeIntegration:
             return response.content[0].text
             
         except Exception as e:
-            logging.error(f"Error generating summary: {e}")
+            self.logger.error(f"Error generating summary: {e}")
             return self._generate_local_summary(memories)
             
     def _generate_local_summary(self, memories: List[Dict[str, Any]]) -> str:
@@ -299,4 +300,83 @@ class ClaudeIntegration:
             "total_cost": self.total_cost,
             "daily_budget": self.max_daily_cost,
             "remaining_budget": max(0, self.max_daily_cost - self.daily_cost)
-        } 
+        }
+    
+    def get_key_points(self, screen_text, use_api=True):
+        """Extract key points from screen text with cost control"""
+        if not screen_text or len(screen_text.strip()) < 50:
+            return "Not enough text to extract key points."
+        
+        # Enforce character limit to control costs
+        screen_text = screen_text[:2000] if len(screen_text) > 2000 else screen_text
+        
+        # Check budget before making API call
+        if not use_api or not self._check_api_budget():
+            return self._extract_key_points_local(screen_text)
+        
+        prompt = f"""
+        Extract the 3-5 most important points and any action items from this content:
+        
+        {screen_text}
+        
+        Format your response as a bulleted list. For action items, add "(ACTION ITEM)" at the end.
+        Focus on deadlines, key decisions, important facts, and required actions.
+        Be concise and clear.
+        """
+        
+        try:
+            response = self.client.messages.create(
+                model="claude-3-haiku-20240307",  # Use cheaper model for MVP
+                max_tokens=200,  # Limit token usage
+                system="You extract key points from text. Be concise and highlight only the most important information.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            # Track API usage and cost
+            self._increment_api_counter(200)  # Approximate token count
+            
+            return response.content[0].text
+        except Exception as e:
+            self.logger.error(f"Error getting key points: {e}")
+            return self._extract_key_points_local(screen_text)
+    
+    def _extract_key_points_local(self, text):
+        """Extract key points without API calls"""
+        # Simple rule-based extraction
+        sentences = text.split('.')
+        key_points = []
+        
+        # Keywords that suggest importance
+        important_keywords = ['must', 'important', 'critical', 'deadline', 'required', 
+                            'key', 'essential', 'urgent', 'necessary', 'vital']
+        
+        # Action verbs that suggest tasks
+        action_verbs = ['submit', 'complete', 'send', 'prepare', 'review', 'update', 
+                       'create', 'finish', 'deliver', 'schedule']
+        
+        # Check each sentence for importance
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            # Check if sentence contains important keywords
+            if any(keyword in sentence.lower() for keyword in important_keywords):
+                key_points.append(f"• {sentence}.")
+                continue
+                
+            # Check if sentence contains action verbs
+            if any(verb in sentence.lower() for verb in action_verbs):
+                key_points.append(f"• {sentence}. (ACTION ITEM)")
+                continue
+        
+        # If we couldn't find important sentences, take the first few
+        if not key_points and len(sentences) > 3:
+            for i in range(min(3, len(sentences))):
+                if sentences[i].strip():
+                    key_points.append(f"• {sentences[i].strip()}.")
+        
+        if not key_points:
+            return "No key points identified."
+            
+        return "\n".join(key_points) 

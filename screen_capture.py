@@ -2,17 +2,26 @@ import mss
 import mss.tools
 import pytesseract
 import io
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import time
 import os
+import platform
+import logging
+import base64
 
 class ScreenCapture:
     def __init__(self):
-        """Initialize the screen capture module"""
-        # Set the path to tesseract if needed (example for Windows)
-        if os.name == 'nt':  # Windows
+        """Initialize screen capture with platform-specific settings"""
+        self.sct = mss.mss()
+        
+        # Configure Tesseract path for Windows
+        if platform.system() == "Windows":
             pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-            
+        
+        # Configure logging
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(__name__)
+    
     def capture_screen(self):
         """Capture the entire screen"""
         with mss.mss() as sct:
@@ -25,12 +34,22 @@ class ScreenCapture:
             return img
             
     def extract_text(self, image):
-        """Extract text from the image using OCR"""
+        """Extract text with improved OCR settings"""
         try:
-            text = pytesseract.image_to_string(image)
+            # Add preprocessing for better OCR results
+            # Enhance contrast
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(1.5)
+            
+            # Apply sharpening
+            image = image.filter(ImageFilter.SHARPEN)
+            
+            # Use better OCR configuration
+            custom_config = r'--oem 3 --psm 6 -l eng'
+            text = pytesseract.image_to_string(image, config=custom_config)
             return text
         except Exception as e:
-            print(f"Error extracting text: {e}")
+            self.logger.error(f"Error extracting text: {e}")
             return ""
     
     def capture_active_window(self):
@@ -57,11 +76,28 @@ class ScreenCapture:
             return img
 
     def analyze_screen(self):
-        """Capture screen and extract text"""
-        img = self.capture_active_window()
-        text = self.extract_text(img)
-        return {
-            "image": img,
-            "text": text,
-            "timestamp": time.time()
-        } 
+        """Capture and analyze the current screen content"""
+        try:
+            # Capture the primary monitor
+            screenshot = self.sct.grab(self.sct.monitors[1])
+            
+            # Convert to PIL Image
+            img = Image.frombytes('RGB', screenshot.size, screenshot.rgb)
+            
+            # Extract text
+            text = self.extract_text(img)
+            
+            # Convert image to base64 for storage
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
+            
+            return {
+                "text": text,
+                "image": img_str,
+                "timestamp": time.time()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing screen: {e}")
+            return None 
