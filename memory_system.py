@@ -9,6 +9,9 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 import threading
 import queue
+from collections import Counter
+import logging
+from typing import List, Dict, Any, Optional
 
 load_dotenv()
 
@@ -23,6 +26,9 @@ class SmartMemorySystem:
         self.db_path = db_path
         self.relevance_threshold = relevance_threshold
         self.claude_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        
+        # Initialize threading lock
+        self.lock = threading.Lock()
         
         # Processing queue for async operations
         self.processing_queue = queue.Queue()
@@ -42,60 +48,68 @@ class SmartMemorySystem:
         self.user_interests = []
         self.common_tasks = []
         self._load_user_profile()
+        
+        self.stopwords = set([
+            'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
+            'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
+            'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she',
+            'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what'
+        ])
 
     def _init_db(self):
         """Initialize the SQLite database"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Create tables if they don't exist
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS memories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content TEXT NOT NULL,
-            source TEXT,
-            timestamp REAL,
-            relevance_score REAL,
-            context TEXT,
-            app_name TEXT,
-            topics TEXT,
-            is_consolidated BOOLEAN DEFAULT 0,
-            access_count INTEGER DEFAULT 0,
-            last_accessed REAL
-        )
-        ''')
-        
-        # Table for consolidated memories (summaries of related memories)
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS consolidated_memories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content TEXT NOT NULL,
-            source_ids TEXT,
-            timestamp REAL,
-            topics TEXT,
-            access_count INTEGER DEFAULT 0,
-            last_accessed REAL
-        )
-        ''')
-        
-        # Table for user profile to track interests and preferences
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_profile (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            interests TEXT,
-            common_tasks TEXT,
-            frequent_apps TEXT,
-            last_updated REAL
-        )
-        ''')
-        
-        # Index for faster topic search
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_memories_topics ON memories (topics)')
-        
-        conn.commit()
-        conn.close()
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create tables if they don't exist
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                source TEXT,
+                timestamp REAL,
+                relevance_score REAL,
+                context TEXT,
+                app_name TEXT,
+                topics TEXT,
+                is_consolidated BOOLEAN DEFAULT 0,
+                access_count INTEGER DEFAULT 0,
+                last_accessed REAL
+            )
+            ''')
+            
+            # Table for consolidated memories (summaries of related memories)
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS consolidated_memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                source_ids TEXT,
+                timestamp REAL,
+                topics TEXT,
+                access_count INTEGER DEFAULT 0,
+                last_accessed REAL
+            )
+            ''')
+            
+            # Table for user profile to track interests and preferences
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_profile (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interests TEXT,
+                common_tasks TEXT,
+                frequent_apps TEXT,
+                last_updated REAL
+            )
+            ''')
+            
+            # Index for faster topic search
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_memories_topics ON memories (topics)')
+            
+            conn.commit()
+            conn.close()
     
-    def store_insight(self, content, source=None, context=None, app_name=None, analyze_now=False):
+    def store_insight(self, content, source=None, context=None, app_name=None, analyze_now=False, topics=None):
         """Store an insight or notification with optional immediate analysis
         
         Args:
@@ -104,6 +118,7 @@ class SmartMemorySystem:
             context: Additional context (e.g., screen text that triggered this)
             app_name: The application the user was using
             analyze_now: If True, analyze synchronously; otherwise queue for async
+            topics: Optional predefined topics to use instead of extracting them
         
         Returns:
             memory_id if stored, None if rejected as irrelevant or duplicate
@@ -132,6 +147,35 @@ class SmartMemorySystem:
             "context": context,
             "app_name": app_name
         }
+        
+        # If topics are provided, use them directly
+        if topics:
+            # Store in database with provided topics
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Calculate a default relevance score
+            relevance_score = 0.8  # High relevance for manually tagged content
+            
+            cursor.execute('''
+            INSERT INTO memories 
+            (content, source, timestamp, relevance_score, context, app_name, topics) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                content, 
+                source, 
+                memory_data.get("timestamp"), 
+                relevance_score,
+                context,
+                app_name,
+                json.dumps(topics)
+            ))
+            
+            memory_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            return memory_id
         
         if analyze_now:
             # Analyze synchronously
@@ -335,33 +379,37 @@ class SmartMemorySystem:
         
         This is more expensive but gives better topics for retrieval
         """
-        try:
-            prompt = f"""
-            Please analyze this text and extract 3-5 key topics or themes:
-            
-            {content}
-            
-            Return ONLY a comma-separated list of topics, with no additional text or explanation.
-            For example: "project management, deadline, client meeting"
-            """
-            
-            response = self.claude_client.messages.create(
-                model="claude-3-sonnet-20240229",
-                max_tokens=100,
-                system="You extract key topics from text. Return only a comma-separated list of topics, no other text.",
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            
-            topics_text = response.content[0].text.strip()
-            topics = [topic.strip() for topic in topics_text.split(',')]
-            return topics
-            
-        except Exception as e:
-            print(f"Error extracting topics: {e}")
-            # Fall back to simple extraction
-            return self._simple_topic_extraction(content)
+        # Use local topic extraction by default
+        return self.extract_topics_local(content)
+        
+        # The following code is commented out to avoid API calls
+        # try:
+        #     prompt = f"""
+        #     Please analyze this text and extract 3-5 key topics or themes:
+        #     
+        #     {content}
+        #     
+        #     Return ONLY a comma-separated list of topics, with no additional text or explanation.
+        #     For example: "project management, deadline, client meeting"
+        #     """
+        #     
+        #     response = self.claude_client.messages.create(
+        #         model="claude-3-sonnet-20240229",
+        #         max_tokens=100,
+        #         system="You extract key topics from text. Return only a comma-separated list of topics, no other text.",
+        #         messages=[
+        #             {"role": "user", "content": prompt}
+        #         ]
+        #     )
+        #     
+        #     topics_text = response.content[0].text.strip()
+        #     topics = [topic.strip() for topic in topics_text.split(',')]
+        #     return topics
+        #     
+        # except Exception as e:
+        #     print(f"Error extracting topics: {e}")
+        #     # Fall back to simple extraction
+        #     return self._simple_topic_extraction(content)
     
     def _process_queue(self):
         """Process the queue of memory operations"""
@@ -798,4 +846,32 @@ class SmartMemorySystem:
             
         except Exception as e:
             print(f"Error getting topics: {e}")
-            return {} 
+            return {}
+
+    def extract_topics_local(self, text: str, max_topics: int = 3) -> List[str]:
+        """Extract topics using only local processing (no API calls)"""
+        if not text or len(text) < 20:
+            return []
+            
+        # Remove punctuation and convert to lowercase
+        text = re.sub(r'[^\w\s]', '', text.lower())
+        
+        # Remove stopwords
+        words = [word for word in text.split() if word not in self.stopwords and len(word) > 2]
+        
+        # Count word frequencies
+        word_counts = Counter(words)
+        
+        # Extract multi-word phrases (potential names, projects)
+        original_text = text
+        phrases = []
+        phrase_pattern = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b')
+        for match in phrase_pattern.finditer(original_text):
+            phrases.append(match.group(1).lower())
+        
+        # Add phrases to counts with higher weight
+        for phrase in phrases:
+            word_counts[phrase] = word_counts.get(phrase, 0) + 5
+        
+        # Get most common words/phrases
+        return [topic for topic, _ in word_counts.most_common(max_topics)] 

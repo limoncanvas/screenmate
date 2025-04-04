@@ -8,7 +8,5 @@ python-dotenv>=1.0.0
 mss>=9.0.1
 pystray>=0.19.5
 win10toast>=0.9.0; sys_platform == 'win32'
-sqlite3>=3.35.0
 pynput>=1.7.6
-pygetwindow>=0.0.9; sys_platform == 'win32'
 pyobjc-framework-Quartz>=9.0.1; sys_platform == 'darwin' 

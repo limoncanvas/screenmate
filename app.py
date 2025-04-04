@@ -1,21 +1,28 @@
-import customtkinter as ctk
-import threading
+import os
 import time
+import threading
+import json
+import sqlite3
+from datetime import datetime
+import platform
+import subprocess
+import tempfile
+from pathlib import Path
+import tkinter as tk
+from tkinter import messagebox
+import customtkinter as ctk
+from PIL import Image, ImageTk
+import io
+import base64
+import logging
+from dotenv import load_dotenv
+
+# Import our modules
 from screen_capture import ScreenCapture
 from claude_integration import ClaudeIntegration
 from input_monitor import InputMonitor
 from memory_system import SmartMemorySystem
-from PIL import Image, ImageTk
-import io
-import pystray
-import os
-from PIL import Image as PILImage
-import platform
-import datetime
-import subprocess
-import json
-import sqlite3
-from dotenv import load_dotenv
+from task_executor import TaskExecutor
 
 class ScreenMateApp:
     def __init__(self):
@@ -23,12 +30,13 @@ class ScreenMateApp:
         self.claude = ClaudeIntegration()
         self.input_monitor = InputMonitor()
         self.memory = SmartMemorySystem()
+        self.task_executor = TaskExecutor()
         
         # Analysis state
-        self.analyzing = True  # Start with analysis enabled
+        self.analyzing = True
         self.analysis_thread = None
         self.last_analysis_time = 0
-        self.analysis_interval = 10.0  # seconds
+        self.analysis_interval = 10.0
         self.last_insight = None
         
         # Notification settings
@@ -64,6 +72,9 @@ class ScreenMateApp:
         
         # Start input monitoring
         self.input_monitor.start_monitoring()
+        
+        # Start the main loop
+        self.app.mainloop()
 
     def _create_system_tray(self):
         """Create the system tray icon"""
@@ -155,12 +166,14 @@ class ScreenMateApp:
         self.tab_home = self.tabview.add("Home")
         self.tab_topics = self.tabview.add("Topics")
         self.tab_summaries = self.tabview.add("Summaries")
+        self.tab_tasks = self.tabview.add("Tasks")  # Add Tasks tab
         self.tab_settings = self.tabview.add("Settings")
         
         # Set up each tab
         self._setup_home_tab()
         self._setup_topics_tab()
         self._setup_summaries_tab()
+        self._setup_tasks_tab()  # Add tasks tab setup
         self._setup_settings_tab()
 
     def _setup_home_tab(self):
@@ -213,67 +226,94 @@ class ScreenMateApp:
 
     def _setup_topics_tab(self):
         """Set up the Topics tab"""
-        # Main layout: topics list on left, memories on right
         topics_frame = ctk.CTkFrame(self.tab_topics)
         topics_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # Left side - Topics list
-        left_frame = ctk.CTkFrame(topics_frame)
-        left_frame.pack(side="left", fill="y", padx=(0, 5), expand=False)
-        left_frame.configure(width=200)  # Set width after packing
+        # Search box
+        search_frame = ctk.CTkFrame(topics_frame)
+        search_frame.pack(fill="x", padx=10, pady=(10, 20))
         
-        topics_label = ctk.CTkLabel(
-            left_frame,
+        search_label = ctk.CTkLabel(search_frame, text="Search Topics:")
+        search_label.pack(side="left", padx=(10, 10))
+        
+        self.topic_search_entry = ctk.CTkEntry(search_frame, width=200)
+        self.topic_search_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.topic_search_entry.bind("<KeyRelease>", lambda e: self._search_topics())
+        
+        # Topics list
+        topics_list_frame = ctk.CTkFrame(topics_frame)
+        topics_list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        topics_list_label = ctk.CTkLabel(
+            topics_list_frame,
             text="Topics:",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        topics_label.pack(anchor="w", padx=10, pady=(10, 5))
+        topics_list_label.pack(anchor="w", padx=10, pady=(10, 5))
         
-        # Search box
-        search_frame = ctk.CTkFrame(left_frame)
-        search_frame.pack(fill="x", padx=10, pady=(0, 10))
+        # Create a frame for the listbox and scrollbar
+        list_container = ctk.CTkFrame(topics_list_frame)
+        list_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         
-        self.topic_search = ctk.CTkEntry(search_frame, placeholder_text="Search topics...")
-        self.topic_search.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        
-        search_button = ctk.CTkButton(
-            search_frame,
-            text="🔍",
-            width=30,
-            command=self._search_topics
+        # Topics listbox
+        self.topics_listbox = tk.Listbox(
+            list_container,
+            bg="#2b2b2b",
+            fg="white",
+            selectbackground="#1f538d",
+            selectforeground="white",
+            font=("Helvetica", 12),
+            height=10
         )
-        search_button.pack(side="right")
+        self.topics_listbox.pack(side="left", fill="both", expand=True)
+        self.topics_listbox.bind("<<ListboxSelect>>", self._on_topic_select)
         
-        # Topics list
-        self.topics_list = ctk.CTkScrollableFrame(left_frame)
-        self.topics_list.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Scrollbar for topics
+        topics_scrollbar = ctk.CTkScrollbar(list_container, command=self.topics_listbox.yview)
+        topics_scrollbar.pack(side="right", fill="y")
+        self.topics_listbox.config(yscrollcommand=topics_scrollbar.set)
         
-        # Initially populate topics
-        self._populate_topics_list()
+        # Memories for selected topic
+        memories_frame = ctk.CTkFrame(topics_frame)
+        memories_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        memories_label = ctk.CTkLabel(
+            memories_frame,
+            text="Memories:",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        memories_label.pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Memories text
+        self.topic_memories_text = ctk.CTkTextbox(
+            memories_frame,
+            wrap="word",
+            font=ctk.CTkFont(size=12)
+        )
+        self.topic_memories_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        # Buttons frame
+        buttons_frame = ctk.CTkFrame(topics_frame)
+        buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
         
         # Refresh button
         refresh_button = ctk.CTkButton(
-            left_frame,
+            buttons_frame,
             text="Refresh Topics",
             command=self._populate_topics_list
         )
-        refresh_button.pack(fill="x", padx=10, pady=10)
+        refresh_button.pack(side="left", padx=10, pady=10)
         
-        # Right side - Memories for selected topic
-        right_frame = ctk.CTkFrame(topics_frame)
-        right_frame.pack(side="right", fill="both", padx=(5, 0), expand=True)
-        
-        self.topic_title = ctk.CTkLabel(
-            right_frame,
-            text="Select a topic to view memories",
-            font=ctk.CTkFont(size=16, weight="bold")
+        # Create sample topics button
+        sample_button = ctk.CTkButton(
+            buttons_frame,
+            text="Create Sample Topics",
+            command=self._create_sample_topics
         )
-        self.topic_title.pack(anchor="w", padx=10, pady=(10, 5))
+        sample_button.pack(side="left", padx=10, pady=10)
         
-        # Memories list
-        self.topic_memories = ctk.CTkTextbox(right_frame)
-        self.topic_memories.pack(fill="both", expand=True, padx=10, pady=10)
-        self.topic_memories.configure(state="disabled")
+        # Populate topics list
+        self._populate_topics_list()
 
     def _setup_summaries_tab(self):
         """Set up the Summaries tab"""
@@ -312,6 +352,45 @@ class ScreenMateApp:
         )
         export_button.pack(side="right", padx=10)
 
+    def _setup_tasks_tab(self):
+        """Setup the Tasks tab UI"""
+        # Task input section
+        task_frame = ctk.CTkFrame(self.tab_tasks)
+        task_frame.pack(fill="x", padx=10, pady=10)
+        
+        task_label = ctk.CTkLabel(task_frame, text="Enter your task:")
+        task_label.pack(pady=5)
+        
+        self.task_entry = ctk.CTkEntry(task_frame, width=400)
+        self.task_entry.pack(pady=5)
+        
+        execute_button = ctk.CTkButton(
+            task_frame,
+            text="Execute Task",
+            command=self._execute_task
+        )
+        execute_button.pack(pady=5)
+        
+        # Task status section
+        status_frame = ctk.CTkFrame(self.tab_tasks)
+        status_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        status_label = ctk.CTkLabel(status_frame, text="Task Status:")
+        status_label.pack(pady=5)
+        
+        self.task_status_text = ctk.CTkTextbox(status_frame, height=200)
+        self.task_status_text.pack(fill="both", expand=True, pady=5)
+        
+        # Task history section
+        history_frame = ctk.CTkFrame(self.tab_tasks)
+        history_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        history_label = ctk.CTkLabel(history_frame, text="Task History:")
+        history_label.pack(pady=5)
+        
+        self.task_history_text = ctk.CTkTextbox(history_frame, height=200)
+        self.task_history_text.pack(fill="both", expand=True, pady=5)
+
     def _setup_settings_tab(self):
         """Set up the Settings tab"""
         settings_frame = ctk.CTkFrame(self.tab_settings)
@@ -345,6 +424,52 @@ class ScreenMateApp:
         self.retention_entry = ctk.CTkEntry(retention_frame, width=60)
         self.retention_entry.pack(side="left")
         self.retention_entry.insert(0, "30")
+        
+        # API Usage Settings
+        api_frame = ctk.CTkFrame(settings_frame)
+        api_frame.pack(fill="x", padx=10, pady=(20, 10))
+        
+        api_label = ctk.CTkLabel(
+            api_frame,
+            text="API Usage Settings:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        api_label.pack(anchor="w", padx=10, pady=(10, 10))
+        
+        # Daily budget setting
+        budget_frame = ctk.CTkFrame(api_frame)
+        budget_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+        budget_label = ctk.CTkLabel(budget_frame, text="Daily API call budget:")
+        budget_label.pack(side="left", padx=(10, 10))
+        
+        self.budget_entry = ctk.CTkEntry(budget_frame, width=60)
+        self.budget_entry.pack(side="left")
+        self.budget_entry.insert(0, str(self.claude.daily_budget))
+        
+        # Economy mode toggle
+        self.economy_mode_var = ctk.BooleanVar(value=False)
+        economy_switch = ctk.CTkSwitch(
+            api_frame, 
+            text="Economy Mode (minimize API usage)", 
+            variable=self.economy_mode_var
+        )
+        economy_switch.pack(anchor="w", padx=20, pady=10)
+        
+        # Show current usage
+        self.api_usage_label = ctk.CTkLabel(
+            api_frame,
+            text=f"Today's API usage: {self.claude.api_calls_today} / {self.claude.daily_budget} calls"
+        )
+        self.api_usage_label.pack(pady=10)
+        
+        # Add refresh button
+        refresh_usage_btn = ctk.CTkButton(
+            api_frame,
+            text="Refresh Usage",
+            command=self._update_api_usage
+        )
+        refresh_usage_btn.pack(pady=(0, 10))
         
         # Apply button
         apply_button = ctk.CTkButton(
@@ -385,21 +510,21 @@ class ScreenMateApp:
     def _populate_topics_list(self):
         """Populate the topics list"""
         # Clear current list
-        for widget in self.topics_list.winfo_children():
+        for widget in self.topics_listbox.winfo_children():
             widget.destroy()
         
         # Get topics from memory system
         topics = self.memory.get_all_topics()
         
         if not topics:
-            no_topics_label = ctk.CTkLabel(self.topics_list, text="No topics found")
+            no_topics_label = ctk.CTkLabel(self.topics_listbox, text="No topics found")
             no_topics_label.pack(pady=10)
             return
         
         # Add each topic as a button
         for topic, count in topics.items():
             topic_btn = ctk.CTkButton(
-                self.topics_list,
+                self.topics_listbox,
                 text=f"{topic} ({count})",
                 command=lambda t=topic: self._show_topic_memories(t),
                 height=30,
@@ -409,13 +534,13 @@ class ScreenMateApp:
 
     def _search_topics(self):
         """Search topics based on user input"""
-        query = self.topic_search.get().lower()
+        query = self.topic_search_entry.get().lower()
         if not query:
             self._populate_topics_list()
             return
         
         # Clear current list
-        for widget in self.topics_list.winfo_children():
+        for widget in self.topics_listbox.winfo_children():
             widget.destroy()
         
         # Get all topics
@@ -425,14 +550,14 @@ class ScreenMateApp:
         filtered_topics = {k: v for k, v in topics.items() if query in k.lower()}
         
         if not filtered_topics:
-            no_results = ctk.CTkLabel(self.topics_list, text=f"No topics matching '{query}'")
+            no_results = ctk.CTkLabel(self.topics_listbox, text=f"No topics matching '{query}'")
             no_results.pack(pady=10)
             return
         
         # Add matching topics
         for topic, count in filtered_topics.items():
             topic_btn = ctk.CTkButton(
-                self.topics_list,
+                self.topics_listbox,
                 text=f"{topic} ({count})",
                 command=lambda t=topic: self._show_topic_memories(t),
                 height=30,
@@ -449,12 +574,12 @@ class ScreenMateApp:
         memories = self.memory.get_memories_by_topic(topic)
         
         # Update memories display
-        self.topic_memories.configure(state="normal")
-        self.topic_memories.delete("1.0", "end")
+        self.topic_memories_text.configure(state="normal")
+        self.topic_memories_text.delete("1.0", "end")
         
         if not memories:
-            self.topic_memories.insert("1.0", f"No memories found for topic: {topic}")
-            self.topic_memories.configure(state="disabled")
+            self.topic_memories_text.insert("1.0", f"No memories found for topic: {topic}")
+            self.topic_memories_text.configure(state="disabled")
             return
         
         # Format memories
@@ -467,27 +592,31 @@ class ScreenMateApp:
             
             # Format memory
             formatted_memory = f"[{timestamp}]{app_info}\n{memory['content']}\n\n"
-            self.topic_memories.insert("end", formatted_memory)
+            self.topic_memories_text.insert("end", formatted_memory)
             
             # Add separator
-            self.topic_memories.insert("end", "-" * 50 + "\n\n")
+            self.topic_memories_text.insert("end", "-" * 50 + "\n\n")
         
-        self.topic_memories.configure(state="disabled")
+        self.topic_memories_text.configure(state="disabled")
 
     def _generate_today_summary(self):
-        """Generate a summary of today's insights"""
+        """Generate a summary of today's insights with economy awareness"""
         self.summary_text.configure(state="normal")
         self.summary_text.delete("1.0", "end")
         self.summary_text.insert("1.0", "Generating summary...")
         self.summary_text.configure(state="disabled")
         
+        # Check economy mode
+        use_api = not self.economy_mode_var.get()
+        
         # Run in a thread to keep UI responsive
-        threading.Thread(target=self._generate_summary_thread).start()
+        threading.Thread(target=self._generate_summary_thread, args=(use_api,)).start()
 
-    def _generate_summary_thread(self):
+    def _generate_summary_thread(self, use_api=True):
         """Thread function to generate summary"""
         try:
-            summary = self.claude.generate_daily_summary()
+            memories = self.memory.get_todays_memories()
+            summary = self.claude.generate_daily_summary(memories, use_api=use_api)
             
             # Update UI in the main thread
             self.app.after(0, lambda: self._update_summary_text(summary))
@@ -588,6 +717,22 @@ class ScreenMateApp:
         
         self.memory_stats.configure(text=stats_text)
 
+    def _update_api_usage(self):
+        """Update the API usage display"""
+        # Get API usage stats
+        stats = self.claude.get_api_usage_stats()
+        
+        # Update the API usage label with cost information
+        self.api_usage_label.configure(
+            text=f"Today's API usage: {stats['api_calls_today']} calls\n"
+                 f"Daily cost: ${stats['daily_cost']:.6f} / ${stats['daily_budget']:.2f}\n"
+                 f"Total cost: ${stats['total_cost']:.6f}"
+        )
+        
+        # Update the budget entry to show the dollar amount
+        self.budget_entry.delete(0, "end")
+        self.budget_entry.insert(0, f"{stats['daily_budget']:.2f}")
+
     def _apply_settings(self):
         """Apply settings from the UI"""
         try:
@@ -596,6 +741,24 @@ class ScreenMateApp:
             if new_interval >= 1.0:
                 self.analysis_interval = new_interval
                 print(f"Capture interval updated to: {new_interval}")
+            
+            # Memory retention
+            retention_days = int(self.retention_entry.get())
+            if retention_days >= 1:
+                self.memory.clear_old_memories(days=retention_days)
+                print(f"Memory retention updated to: {retention_days} days")
+            
+            # API budget
+            try:
+                new_budget = float(self.budget_entry.get())
+                if new_budget >= 0:
+                    self.claude.max_daily_cost = new_budget
+                    print(f"API budget updated to: ${new_budget:.2f}")
+            except ValueError:
+                print("Invalid API budget value")
+            
+            # Update API usage display
+            self._update_api_usage()
             
             # Show success message
             messagebox_label = ctk.CTkLabel(
@@ -839,8 +1002,15 @@ class ScreenMateApp:
             # Get input context
             input_context = self.input_monitor.get_context_data()
             
+            # Check economy mode
+            use_api = not self.economy_mode_var.get()
+            
             # Get insights from Claude with combined context
-            insight = self.claude.get_insights_with_context(screen_data["text"], input_context)
+            insight = self.claude.get_insights_with_context(
+                screen_data["text"], 
+                input_context,
+                use_api=use_api
+            )
             
             # Store the insight in memory
             app_name = input_context.get("current_app", {}).get("name")
@@ -879,6 +1049,9 @@ class ScreenMateApp:
             self.app.after(0, lambda: self.status_label.configure(
                 text="Active" if self.analyzing else "Analyzed"
             ))
+            
+            # Update topics list
+            self.app.after(0, self._populate_topics_list)
             
         except Exception as e:
             error_msg = f"Error during analysis: {str(e)}"
@@ -984,6 +1157,143 @@ class ScreenMateApp:
         
         # Clear the question entry
         self.question_entry.delete(0, "end")
+    
+    def _execute_task(self):
+        """Execute the task entered by the user"""
+        task_description = self.task_entry.get()
+        if not task_description:
+            self.task_status_text.delete("1.0", "end")
+            self.task_status_text.insert("1.0", "Please enter a task description")
+            return
+            
+        # Update status
+        self.task_status_text.delete("1.0", "end")
+        self.task_status_text.insert("1.0", f"Executing task: {task_description}\n")
+        
+        # Execute task in a separate thread
+        threading.Thread(target=self._execute_task_thread, args=(task_description,), daemon=True).start()
+        
+    def _execute_task_thread(self, task_description: str):
+        """Execute task in a separate thread"""
+        try:
+            # Execute the task
+            result = self.task_executor.execute_task(task_description)
+            
+            # Update status
+            self.app.after(0, lambda: self._update_task_status(result))
+            
+        except Exception as e:
+            self.app.after(0, lambda: self._update_task_error(str(e)))
+            
+    def _update_task_status(self, result):
+        """Update the task status in the UI"""
+        self.task_status_text.delete("1.0", "end")
+        if result["status"] == "success":
+            self.task_status_text.insert("1.0", "Task completed successfully!\n\n")
+            self.task_status_text.insert("end", "Actions performed:\n")
+            for action_result in result["results"]:
+                self.task_status_text.insert("end", f"- {action_result}\n")
+        else:
+            self.task_status_text.insert("1.0", f"Task failed: {result['message']}\n")
+        
+        # Add to history
+        self.task_history_text.insert("1.0", f"Task: {result['task_description']}\n")
+        self.task_history_text.insert("end", f"Status: {result['status']}\n")
+        if result["status"] == "success":
+            self.task_history_text.insert("end", "Actions performed:\n")
+            for action_result in result["results"]:
+                self.task_history_text.insert("end", f"- {action_result}\n")
+        self.task_history_text.insert("end", "\n")
+        
+    def _update_task_error(self, error_message):
+        """Update the task status with an error message"""
+        self.task_status_text.delete("1.0", "end")
+        self.task_status_text.insert("1.0", f"Error executing task: {error_message}")
+    
+    def _create_sample_topics(self):
+        """Create sample topics for testing"""
+        try:
+            # Sample insights with different topics
+            sample_insights = [
+                {
+                    "content": "You're working on a Python project. Consider using type hints for better code quality.",
+                    "source": "sample",
+                    "context": "Python code with functions and classes",
+                    "app_name": "VS Code",
+                    "topics": ["Python", "Programming", "Code Quality"]
+                },
+                {
+                    "content": "You have a meeting scheduled for tomorrow at 10 AM. Don't forget to prepare the presentation.",
+                    "source": "sample",
+                    "context": "Calendar showing tomorrow's schedule",
+                    "app_name": "Calendar",
+                    "topics": ["Meetings", "Schedule", "Presentations"]
+                },
+                {
+                    "content": "Your email inbox has several unread messages. Consider setting up filters to organize them better.",
+                    "source": "sample",
+                    "context": "Email client with unread messages",
+                    "app_name": "Mail",
+                    "topics": ["Email", "Organization", "Productivity"]
+                },
+                {
+                    "content": "You're researching machine learning algorithms. Consider exploring neural networks for your project.",
+                    "source": "sample",
+                    "context": "Web page about machine learning",
+                    "app_name": "Browser",
+                    "topics": ["Machine Learning", "Research", "Neural Networks"]
+                },
+                {
+                    "content": "Your system has pending updates. Consider installing them to improve security.",
+                    "source": "sample",
+                    "context": "System preferences showing updates",
+                    "app_name": "System Preferences",
+                    "topics": ["System", "Security", "Updates"]
+                }
+            ]
+            
+            # Store each insight
+            for insight in sample_insights:
+                self.memory.store_insight(
+                    content=insight["content"],
+                    source=insight["source"],
+                    context=insight["context"],
+                    app_name=insight["app_name"],
+                    topics=insight["topics"]
+                )
+            
+            # Update topics list
+            self._populate_topics_list()
+            
+            # Show success message
+            messagebox_label = ctk.CTkLabel(
+                self.tab_topics,
+                text="Sample topics created successfully",
+                text_color="green"
+            )
+            messagebox_label.pack(pady=10)
+            
+            # Remove message after 3 seconds
+            self.app.after(3000, lambda: messagebox_label.destroy())
+            
+        except Exception as e:
+            # Show error message
+            messagebox_label = ctk.CTkLabel(
+                self.tab_topics,
+                text=f"Error creating sample topics: {str(e)}",
+                text_color="red"
+            )
+            messagebox_label.pack(pady=10)
+            
+            # Remove message after 3 seconds
+            self.app.after(3000, lambda: messagebox_label.destroy())
+            
+    def _on_topic_select(self, event):
+        """Handle topic selection"""
+        selection = self.topics_listbox.curselection()
+        if selection:
+            topic = self.topics_listbox.get(selection[0])
+            self._show_topic_memories(topic)
     
     def run(self):
         """Run the application"""
