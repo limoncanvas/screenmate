@@ -875,3 +875,325 @@ class SmartMemorySystem:
         
         # Get most common words/phrases
         return [topic for topic, _ in word_counts.most_common(max_topics)] 
+
+    def retrieve_recent_insights(self, limit=50):
+        """Retrieve recent insights from the memory system
+        
+        Args:
+            limit: Maximum number of insights to return
+            
+        Returns:
+            List of recent insights
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+        cursor = conn.cursor()
+        
+        # Get recent insights ordered by timestamp
+        cursor.execute('''
+        SELECT * FROM memories
+        ORDER BY timestamp DESC
+        LIMIT ?
+        ''', (limit,))
+        
+        insights = [dict(row) for row in cursor.fetchall()]
+        
+        # Process each insight
+        for insight in insights:
+            # Parse topics from JSON
+            if 'topics' in insight and insight['topics']:
+                try:
+                    insight['topics'] = json.loads(insight['topics'])
+                except json.JSONDecodeError:
+                    insight['topics'] = []
+        
+        conn.close()
+        return insights
+    
+    def get_insight_by_id(self, insight_id):
+        """Get a specific insight by ID
+        
+        Args:
+            insight_id: The ID of the insight to retrieve
+            
+        Returns:
+            Insight dictionary or None if not found
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+        cursor = conn.cursor()
+        
+        # Get the insight by ID
+        cursor.execute('''
+        SELECT * FROM memories
+        WHERE id = ?
+        ''', (insight_id,))
+        
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return None
+        
+        insight = dict(row)
+        
+        # Parse topics from JSON
+        if 'topics' in insight and insight['topics']:
+            try:
+                insight['topics'] = json.loads(insight['topics'])
+            except json.JSONDecodeError:
+                insight['topics'] = []
+        
+        conn.close()
+        return insight
+    
+    def get_all_categories(self):
+        """Get all unique categories from insights
+        
+        Returns:
+            List of unique categories
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get all topics from memories
+        cursor.execute('SELECT topics FROM memories')
+        results = cursor.fetchall()
+        
+        conn.close()
+        
+        # Extract categories from topics
+        categories = set()
+        for topics_json, in results:
+            if topics_json:
+                try:
+                    topics = json.loads(topics_json)
+                    for topic in topics:
+                        # Add categories (we could filter to only include user-added categories)
+                        categories.add(topic)
+                except json.JSONDecodeError:
+                    continue
+        
+        # Always include a "General" category
+        categories.add("General")
+        
+        return sorted(list(categories))
+    
+    def update_insight_category(self, insight_id, new_category):
+        """Update the category of an insight
+        
+        Args:
+            insight_id: The ID of the insight to update
+            new_category: The new category to assign
+            
+        Returns:
+            Boolean indicating success
+        """
+        try:
+            # First get the current insight
+            insight = self.get_insight_by_id(insight_id)
+            if not insight:
+                return False
+            
+            # Get current topics
+            topics = insight.get('topics', [])
+            if isinstance(topics, str):
+                try:
+                    topics = json.loads(topics)
+                except json.JSONDecodeError:
+                    topics = []
+            
+            # Remove any existing categories (simplistic approach)
+            # In a more robust implementation, you might maintain a separate categories field
+            
+            # Add the new category
+            if new_category not in topics:
+                topics.append(new_category)
+            
+            # Update in database
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            UPDATE memories
+            SET topics = ?
+            WHERE id = ?
+            ''', (json.dumps(topics), insight_id))
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error updating insight category: {e}")
+            return False
+    
+    def update_insight_content(self, insight_id, new_content):
+        """Update the content of an insight
+        
+        Args:
+            insight_id: The ID of the insight to update
+            new_content: The new content for the insight
+            
+        Returns:
+            Boolean indicating success
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            UPDATE memories
+            SET content = ?
+            WHERE id = ?
+            ''', (new_content, insight_id))
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error updating insight content: {e}")
+            return False
+    
+    def delete_insight(self, insight_id):
+        """Delete an insight from the memory system
+        
+        Args:
+            insight_id: The ID of the insight to delete
+            
+        Returns:
+            Boolean indicating success
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            DELETE FROM memories
+            WHERE id = ?
+            ''', (insight_id,))
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error deleting insight: {e}")
+            return False
+    
+    def get_filtered_insights(self, date_range=None, category=None, limit=50):
+        """Get insights filtered by date and/or category
+        
+        Args:
+            date_range: Unix timestamp for the start date (None for all time)
+            category: Category to filter by (None for all categories)
+            limit: Maximum number of insights to return
+            
+        Returns:
+            List of insights matching the filters
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        query = "SELECT * FROM memories"
+        params = []
+        
+        where_clauses = []
+        
+        # Add date filter
+        if date_range:
+            where_clauses.append("timestamp >= ?")
+            params.append(date_range)
+        
+        # Add category filter
+        if category:
+            where_clauses.append("topics LIKE ?")
+            params.append(f"%{category}%")
+        
+        # Add WHERE clause if we have any filters
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+        
+        # Add ordering and limit
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        
+        # Execute query
+        cursor.execute(query, params)
+        
+        insights = [dict(row) for row in cursor.fetchall()]
+        
+        # Process each insight
+        for insight in insights:
+            # Parse topics from JSON
+            if 'topics' in insight and insight['topics']:
+                try:
+                    insight['topics'] = json.loads(insight['topics'])
+                except json.JSONDecodeError:
+                    insight['topics'] = []
+        
+        conn.close()
+        return insights
+    
+    def search_memories(self, query, limit=20):
+        """Search insights by content
+        
+        Args:
+            query: Search query
+            limit: Maximum number of results
+            
+        Returns:
+            List of matching insights
+        """
+        if not query or len(query) < 3:
+            return []
+            
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Search in content and context
+        cursor.execute('''
+        SELECT * FROM memories 
+        WHERE content LIKE ? OR context LIKE ?
+        ORDER BY timestamp DESC 
+        LIMIT ?
+        ''', (f'%{query}%', f'%{query}%', limit))
+        
+        insights = [dict(row) for row in cursor.fetchall()]
+        
+        # Process each insight
+        for insight in insights:
+            # Parse topics from JSON
+            if 'topics' in insight and insight['topics']:
+                try:
+                    insight['topics'] = json.loads(insight['topics'])
+                except json.JSONDecodeError:
+                    insight['topics'] = []
+        
+        conn.close()
+        return insights
+    
+    def _calculate_similarity(self, text1, text2):
+        """Calculate similarity between two texts
+        
+        Args:
+            text1: First text
+            text2: Second text
+            
+        Returns:
+            Similarity score between 0 and 1
+        """
+        # Simple word overlap similarity
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        if not words1 or not words2:
+            return 0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union) 
