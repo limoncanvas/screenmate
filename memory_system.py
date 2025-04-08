@@ -103,6 +103,19 @@ class SmartMemorySystem:
             )
             ''')
             
+            # Table for journal entries
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                mood TEXT,
+                tags TEXT,
+                timestamp REAL,
+                last_modified REAL
+            )
+            ''')
+            
             # Index for faster topic search
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_memories_topics ON memories (topics)')
             
@@ -1197,3 +1210,273 @@ class SmartMemorySystem:
         union = words1.union(words2)
         
         return len(intersection) / len(union) 
+
+    def add_journal_entry(self, title, content, mood=None, tags=None):
+        """Add a new journal entry
+        
+        Args:
+            title: Title of the journal entry
+            content: Content of the journal entry
+            mood: Optional mood associated with the entry
+            tags: Optional list of tags
+            
+        Returns:
+            ID of the created entry or None if failed
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            current_time = time.time()
+            
+            cursor.execute('''
+            INSERT INTO journal_entries (title, content, mood, tags, timestamp, last_modified)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                title,
+                content,
+                mood,
+                json.dumps(tags) if tags else None,
+                current_time,
+                current_time
+            ))
+            
+            entry_id = cursor.lastrowid
+            
+            # Extract topics from content for context
+            topics = self.extract_topics_local(content)
+            
+            # Store as a memory for context
+            self.store_insight(
+                content=f"Journal Entry: {title}\n{content[:200]}...",
+                source="journal",
+                context=content,
+                app_name="journal",
+                topics=topics
+            )
+            
+            conn.commit()
+            conn.close()
+            
+            return entry_id
+        except Exception as e:
+            logging.error(f"Error adding journal entry: {e}")
+            return None
+    
+    def get_journal_entries(self, limit=50, offset=0, mood=None, tag=None):
+        """Get journal entries with optional filtering
+        
+        Args:
+            limit: Maximum number of entries to return
+            offset: Number of entries to skip
+            mood: Filter by mood
+            tag: Filter by tag
+            
+        Returns:
+            List of journal entries
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        query = "SELECT * FROM journal_entries"
+        params = []
+        
+        where_clauses = []
+        
+        if mood:
+            where_clauses.append("mood = ?")
+            params.append(mood)
+        
+        if tag:
+            where_clauses.append("tags LIKE ?")
+            params.append(f"%{tag}%")
+        
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+        
+        query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        
+        entries = [dict(row) for row in cursor.fetchall()]
+        
+        # Parse tags from JSON
+        for entry in entries:
+            if entry.get('tags'):
+                try:
+                    entry['tags'] = json.loads(entry['tags'])
+                except json.JSONDecodeError:
+                    entry['tags'] = []
+        
+        conn.close()
+        return entries
+    
+    def get_journal_entry(self, entry_id):
+        """Get a specific journal entry by ID
+        
+        Args:
+            entry_id: ID of the entry to retrieve
+            
+        Returns:
+            Journal entry dictionary or None if not found
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+        SELECT * FROM journal_entries
+        WHERE id = ?
+        ''', (entry_id,))
+        
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return None
+        
+        entry = dict(row)
+        
+        # Parse tags from JSON
+        if entry.get('tags'):
+            try:
+                entry['tags'] = json.loads(entry['tags'])
+            except json.JSONDecodeError:
+                entry['tags'] = []
+        
+        conn.close()
+        return entry
+    
+    def update_journal_entry(self, entry_id, title=None, content=None, mood=None, tags=None):
+        """Update a journal entry
+        
+        Args:
+            entry_id: ID of the entry to update
+            title: New title (optional)
+            content: New content (optional)
+            mood: New mood (optional)
+            tags: New tags (optional)
+            
+        Returns:
+            Boolean indicating success
+        """
+        try:
+            # First get the current entry
+            entry = self.get_journal_entry(entry_id)
+            if not entry:
+                return False
+            
+            # Prepare update query
+            updates = []
+            params = []
+            
+            if title is not None:
+                updates.append("title = ?")
+                params.append(title)
+            
+            if content is not None:
+                updates.append("content = ?")
+                params.append(content)
+            
+            if mood is not None:
+                updates.append("mood = ?")
+                params.append(mood)
+            
+            if tags is not None:
+                updates.append("tags = ?")
+                params.append(json.dumps(tags))
+            
+            if not updates:
+                return True  # Nothing to update
+            
+            updates.append("last_modified = ?")
+            params.append(time.time())
+            
+            params.append(entry_id)
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute(f'''
+            UPDATE journal_entries
+            SET {", ".join(updates)}
+            WHERE id = ?
+            ''', params)
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error updating journal entry: {e}")
+            return False
+    
+    def delete_journal_entry(self, entry_id):
+        """Delete a journal entry
+        
+        Args:
+            entry_id: ID of the entry to delete
+            
+        Returns:
+            Boolean indicating success
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            DELETE FROM journal_entries
+            WHERE id = ?
+            ''', (entry_id,))
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error deleting journal entry: {e}")
+            return False
+    
+    def get_journal_stats(self):
+        """Get statistics about journal entries
+        
+        Returns:
+            Dictionary containing journal statistics
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get total number of entries
+            cursor.execute('SELECT COUNT(*) FROM journal_entries')
+            total_entries = cursor.fetchone()[0]
+            
+            # Get mood distribution
+            cursor.execute('SELECT mood, COUNT(*) FROM journal_entries GROUP BY mood')
+            mood_counts = dict(cursor.fetchall())
+            
+            # Get tag distribution
+            cursor.execute('SELECT tags FROM journal_entries')
+            all_tags = []
+            for tags_json, in cursor.fetchall():
+                if tags_json:
+                    try:
+                        tags = json.loads(tags_json)
+                        all_tags.extend(tags)
+                    except json.JSONDecodeError:
+                        continue
+            
+            tag_counts = Counter(all_tags).most_common(10)
+            
+            conn.close()
+            
+            return {
+                'total_entries': total_entries,
+                'mood_distribution': mood_counts,
+                'top_tags': tag_counts
+            }
+        except Exception as e:
+            logging.error(f"Error getting journal stats: {e}")
+            return None 

@@ -34,34 +34,43 @@ class ScreenMateApp(ctk.CTk):
         super().__init__()
         
         # Initialize core components
+        self.memory_system = SmartMemorySystem()
         self.screen_capture = ScreenCapture()
         self.claude = ClaudeIntegration()
-        self.memory = SmartMemorySystem()  # Initialize memory system
         
-        # Analysis state
-        self.analyzing = False
-        self.analysis_thread = None
-        self.last_analysis_time = 0
-        self.analysis_interval = 15.0  # Longer interval for cost efficiency
-        
-        # Create message queue for thread communication
+        # Message queue for thread communication
         self.message_queue = queue.Queue()
         
-        # Set up the window
-        self.title("ScreenMate - Intelligent Screen Assistant")
-        self.geometry("800x600")  # Larger default size
+        # Analysis settings
+        self.analysis_interval = 15  # seconds
+        self.analyzing = False
+        self.monitoring = False
         
-        # Set up UI
-        self._setup_ui()
+        # Setup UI
+        self.title("ScreenMate - Knowledge Library")
+        self.geometry("800x600")
         
-        # Set up system tray
+        # Create tab view
+        self.tabview = ctk.CTkTabview(self)
+        self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Create tabs
+        self.key_points_tab = self.tabview.add("Key Points")
+        self.knowledge_tab = self.tabview.add("Knowledge Library")
+        self.journal_tab = self.tabview.add("Journal")
+        self.settings_tab = self.tabview.add("Settings")
+        
+        # Setup each tab
+        self._setup_key_points_tab()
+        self._setup_knowledge_tab()
+        self._setup_journal_tab()
+        self._setup_settings_tab()
+        
+        # Setup system tray
         self._setup_system_tray()
         
         # Start message processing
-        self.after(100, self._process_messages)
-        
-        # Load saved insights on startup
-        self._load_saved_insights()
+        self._process_messages()
 
     def _process_messages(self):
         """Process messages from the analysis thread"""
@@ -269,19 +278,19 @@ class ScreenMateApp(ctk.CTk):
         """Set up the Key Points tab"""
         # Key Points section
         key_points_label = ctk.CTkLabel(
-            self.tab_key_points,
+            self.key_points_tab,
             text="Key Points:",
             font=ctk.CTkFont(size=16, weight="bold")
         )
         key_points_label.pack(anchor="w", padx=10, pady=(10, 5))
         
-        self.key_points_text = ctk.CTkTextbox(self.tab_key_points, height=250)
+        self.key_points_text = ctk.CTkTextbox(self.key_points_tab, height=250)
         self.key_points_text.pack(fill="x", padx=10, pady=(0, 10))
         self.key_points_text.insert("1.0", "Key points will appear here...")
         self.key_points_text.configure(state="disabled")
         
         # Control buttons
-        control_frame = ctk.CTkFrame(self.tab_key_points)
+        control_frame = ctk.CTkFrame(self.key_points_tab)
         control_frame.pack(fill="x", padx=10, pady=10)
         
         self.start_button = ctk.CTkButton(
@@ -299,7 +308,7 @@ class ScreenMateApp(ctk.CTk):
         self.analyze_now_button.pack(side="right", padx=(10, 0), expand=True, fill="x")
         
         # Settings section
-        settings_frame = ctk.CTkFrame(self.tab_key_points)
+        settings_frame = ctk.CTkFrame(self.key_points_tab)
         settings_frame.pack(fill="x", padx=10, pady=10)
         
         # Economy mode toggle
@@ -350,7 +359,7 @@ class ScreenMateApp(ctk.CTk):
         self.category_var = ctk.StringVar(value="All")
         self.category_menu = ctk.CTkOptionMenu(
             filter_frame,
-            values=["All"] + self.memory.get_all_categories(),
+            values=["All"] + self.memory_system.get_all_categories(),
             variable=self.category_var,
             command=self._filter_insights
         )
@@ -486,7 +495,7 @@ class ScreenMateApp(ctk.CTk):
         """Search insights"""
         query = self.search_entry.get()
         if query:
-            insights = self.memory.search_memories(query)
+            insights = self.memory_system.search_memories(query)
             
             # Clear current insights
             for widget in self.insights_frame.winfo_children():
@@ -521,7 +530,7 @@ class ScreenMateApp(ctk.CTk):
         
         category_menu = ctk.CTkOptionMenu(
             edit_window,
-            values=self.memory.get_all_categories()
+            values=self.memory_system.get_all_categories()
         )
         if insight.get("topics"):
             category_menu.set(insight["topics"][0])
@@ -530,13 +539,13 @@ class ScreenMateApp(ctk.CTk):
         # Save button
         def save_changes():
             # Update content
-            self.memory.update_insight_content(
+            self.memory_system.update_insight_content(
                 insight["id"],
                 content_text.get("1.0", "end").strip()
             )
             
             # Update category
-            self.memory.update_insight_category(
+            self.memory_system.update_insight_category(
                 insight["id"],
                 category_menu.get()
             )
@@ -556,7 +565,7 @@ class ScreenMateApp(ctk.CTk):
 
     def _delete_insight(self, insight):
         """Delete an insight"""
-        if self.memory.delete_insight(insight["id"]):
+        if self.memory_system.delete_insight(insight["id"]):
             self._load_insights()
 
     def _save_settings(self):
@@ -602,10 +611,303 @@ class ScreenMateApp(ctk.CTk):
             category = self.category_var.get()
         
         # Get filtered insights
-        return self.memory.get_filtered_insights(
+        return self.memory_system.get_filtered_insights(
             date_range=date_range,
             category=category
         )
+
+    def _setup_journal_tab(self):
+        """Setup the Journal tab"""
+        # New entry frame
+        new_entry_frame = ctk.CTkFrame(self.journal_tab)
+        new_entry_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Title
+        title_label = ctk.CTkLabel(new_entry_frame, text="Title:")
+        title_label.pack(pady=5)
+        
+        self.journal_title = ctk.CTkEntry(new_entry_frame, width=300)
+        self.journal_title.pack(pady=5)
+        
+        # Content
+        content_label = ctk.CTkLabel(new_entry_frame, text="Content:")
+        content_label.pack(pady=5)
+        
+        self.journal_content = ctk.CTkTextbox(new_entry_frame, width=700, height=200)
+        self.journal_content.pack(pady=5)
+        
+        # Mood and tags frame
+        meta_frame = ctk.CTkFrame(new_entry_frame)
+        meta_frame.pack(fill="x", pady=5)
+        
+        # Mood
+        mood_label = ctk.CTkLabel(meta_frame, text="Mood:")
+        mood_label.pack(side="left", padx=5)
+        
+        self.mood_var = ctk.StringVar(value="Neutral")
+        self.mood_menu = ctk.CTkOptionMenu(
+            meta_frame,
+            values=["Happy", "Neutral", "Sad", "Excited", "Anxious", "Calm"],
+            variable=self.mood_var
+        )
+        self.mood_menu.pack(side="left", padx=5)
+        
+        # Tags
+        tags_label = ctk.CTkLabel(meta_frame, text="Tags:")
+        tags_label.pack(side="left", padx=5)
+        
+        self.journal_tags = ctk.CTkEntry(meta_frame, width=200)
+        self.journal_tags.pack(side="left", padx=5)
+        
+        # Save button
+        self.save_journal_button = ctk.CTkButton(
+            new_entry_frame,
+            text="Save Entry",
+            command=self._save_journal_entry
+        )
+        self.save_journal_button.pack(pady=10)
+        
+        # Entries list
+        entries_label = ctk.CTkLabel(self.journal_tab, text="Recent Entries")
+        entries_label.pack(pady=5)
+        
+        # Filter frame
+        filter_frame = ctk.CTkFrame(self.journal_tab)
+        filter_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Mood filter
+        self.journal_mood_filter = ctk.CTkOptionMenu(
+            filter_frame,
+            values=["All Moods", "Happy", "Neutral", "Sad", "Excited", "Anxious", "Calm"],
+            command=self._filter_journal_entries
+        )
+        self.journal_mood_filter.pack(side="left", padx=5)
+        
+        # Tag filter
+        self.journal_tag_filter = ctk.CTkEntry(
+            filter_frame,
+            placeholder_text="Filter by tag...",
+            width=200
+        )
+        self.journal_tag_filter.pack(side="left", padx=5)
+        
+        self.journal_tag_filter.bind("<Return>", self._filter_journal_entries)
+        
+        # Entries list
+        self.journal_entries_frame = ctk.CTkScrollableFrame(
+            self.journal_tab,
+            width=700,
+            height=200
+        )
+        self.journal_entries_frame.pack(pady=10, padx=10)
+        
+        # Load initial entries
+        self._load_journal_entries()
+
+    def _save_journal_entry(self):
+        """Save a new journal entry"""
+        title = self.journal_title.get()
+        content = self.journal_content.get("1.0", "end").strip()
+        mood = self.mood_var.get()
+        tags = [tag.strip() for tag in self.journal_tags.get().split(",") if tag.strip()]
+        
+        if title and content:
+            entry_id = self.memory_system.add_journal_entry(
+                title=title,
+                content=content,
+                mood=mood,
+                tags=tags
+            )
+            
+            if entry_id:
+                # Clear fields
+                self.journal_title.delete(0, "end")
+                self.journal_content.delete("1.0", "end")
+                self.journal_tags.delete(0, "end")
+                
+                # Refresh entries
+                self._load_journal_entries()
+                
+                # Show success message
+                self.status_label.configure(text="Journal entry saved successfully")
+            else:
+                self.status_label.configure(text="Error saving journal entry")
+
+    def _load_journal_entries(self):
+        """Load journal entries into the list"""
+        # Clear current entries
+        for widget in self.journal_entries_frame.winfo_children():
+            widget.destroy()
+        
+        # Get entries based on current filters
+        entries = self._get_filtered_journal_entries()
+        
+        # Add entries to list
+        for entry in entries:
+            self._add_journal_entry_to_list(entry)
+
+    def _get_filtered_journal_entries(self):
+        """Get journal entries based on current filters"""
+        mood = None
+        if self.journal_mood_filter.get() != "All Moods":
+            mood = self.journal_mood_filter.get()
+        
+        tag = None
+        tag_filter = self.journal_tag_filter.get().strip()
+        if tag_filter:
+            tag = tag_filter
+        
+        return self.memory_system.get_journal_entries(
+            mood=mood,
+            tag=tag
+        )
+
+    def _add_journal_entry_to_list(self, entry):
+        """Add a journal entry to the list"""
+        # Create frame for entry
+        entry_frame = ctk.CTkFrame(self.journal_entries_frame)
+        entry_frame.pack(fill="x", pady=5, padx=5)
+        
+        # Title and date
+        header_frame = ctk.CTkFrame(entry_frame)
+        header_frame.pack(fill="x", pady=5)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text=entry["title"],
+            font=("Helvetica", 12, "bold")
+        )
+        title_label.pack(side="left", padx=5)
+        
+        date = datetime.fromtimestamp(entry["timestamp"])
+        date_label = ctk.CTkLabel(
+            header_frame,
+            text=date.strftime("%Y-%m-%d %H:%M")
+        )
+        date_label.pack(side="right", padx=5)
+        
+        # Preview
+        preview_label = ctk.CTkLabel(
+            entry_frame,
+            text=entry["content"][:100] + "...",
+            wraplength=600
+        )
+        preview_label.pack(pady=5)
+        
+        # Metadata frame
+        meta_frame = ctk.CTkFrame(entry_frame)
+        meta_frame.pack(fill="x", pady=5)
+        
+        # Mood
+        if entry.get("mood"):
+            mood_label = ctk.CTkLabel(
+                meta_frame,
+                text=f"Mood: {entry['mood']}"
+            )
+            mood_label.pack(side="left", padx=5)
+        
+        # Tags
+        if entry.get("tags"):
+            tags_label = ctk.CTkLabel(
+                meta_frame,
+                text=f"Tags: {', '.join(entry['tags'])}"
+            )
+            tags_label.pack(side="left", padx=5)
+        
+        # Action buttons
+        action_frame = ctk.CTkFrame(entry_frame)
+        action_frame.pack(fill="x", pady=5)
+        
+        edit_button = ctk.CTkButton(
+            action_frame,
+            text="Edit",
+            command=lambda e=entry: self._edit_journal_entry(e)
+        )
+        edit_button.pack(side="left", padx=5)
+        
+        delete_button = ctk.CTkButton(
+            action_frame,
+            text="Delete",
+            command=lambda e=entry: self._delete_journal_entry(e)
+        )
+        delete_button.pack(side="left", padx=5)
+
+    def _edit_journal_entry(self, entry):
+        """Edit a journal entry"""
+        # Create edit window
+        edit_window = ctk.CTkToplevel(self)
+        edit_window.title("Edit Journal Entry")
+        edit_window.geometry("600x400")
+        
+        # Title
+        title_label = ctk.CTkLabel(edit_window, text="Title:")
+        title_label.pack(pady=5)
+        
+        title_entry = ctk.CTkEntry(edit_window, width=300)
+        title_entry.insert(0, entry["title"])
+        title_entry.pack(pady=5)
+        
+        # Content
+        content_label = ctk.CTkLabel(edit_window, text="Content:")
+        content_label.pack(pady=5)
+        
+        content_text = ctk.CTkTextbox(edit_window, width=500, height=200)
+        content_text.insert("1.0", entry["content"])
+        content_text.pack(pady=5)
+        
+        # Mood
+        mood_label = ctk.CTkLabel(edit_window, text="Mood:")
+        mood_label.pack(pady=5)
+        
+        mood_menu = ctk.CTkOptionMenu(
+            edit_window,
+            values=["Happy", "Neutral", "Sad", "Excited", "Anxious", "Calm"]
+        )
+        if entry.get("mood"):
+            mood_menu.set(entry["mood"])
+        mood_menu.pack(pady=5)
+        
+        # Tags
+        tags_label = ctk.CTkLabel(edit_window, text="Tags:")
+        tags_label.pack(pady=5)
+        
+        tags_entry = ctk.CTkEntry(edit_window, width=300)
+        if entry.get("tags"):
+            tags_entry.insert(0, ", ".join(entry["tags"]))
+        tags_entry.pack(pady=5)
+        
+        # Save button
+        def save_changes():
+            # Update entry
+            self.memory_system.update_journal_entry(
+                entry_id=entry["id"],
+                title=title_entry.get(),
+                content=content_text.get("1.0", "end").strip(),
+                mood=mood_menu.get(),
+                tags=[tag.strip() for tag in tags_entry.get().split(",") if tag.strip()]
+            )
+            
+            # Refresh entries
+            self._load_journal_entries()
+            
+            # Close window
+            edit_window.destroy()
+        
+        save_button = ctk.CTkButton(
+            edit_window,
+            text="Save Changes",
+            command=save_changes
+        )
+        save_button.pack(pady=10)
+
+    def _delete_journal_entry(self, entry):
+        """Delete a journal entry"""
+        if self.memory_system.delete_journal_entry(entry["id"]):
+            self._load_journal_entries()
+
+    def _filter_journal_entries(self, _=None):
+        """Filter journal entries based on current settings"""
+        self._load_journal_entries()
 
     def run(self):
         """Start the application"""
